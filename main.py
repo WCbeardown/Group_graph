@@ -24,8 +24,9 @@ last_display = last.strftime('%Y-%m-%d')  # 時間なし文字列
 st.write('   最終更新日：', last_display)
 
 
-st.write('使い方：下の入力欄に参加者リストをそのまま貼り付けてください')
-st.write('レイティング　比較グラフ')
+st.write('使い方：自分のリーグのみの写真を用意してください。')
+st.write('写真をGoogleレンズでテキスト読み込みした文字列を下の欄に貼り付けてください。')
+st.write('上の矢印で描画開始年を変更できます。')
 st.write('羽曳野・若葉・奈良・HPC・神戸・カミ・向日市のデータのみです')
 st.write('   最終更新日：', last)
 
