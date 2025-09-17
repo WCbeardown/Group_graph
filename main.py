@@ -17,18 +17,16 @@ rating_data["日付"] = pd.to_datetime(rating_data["日付"].str.replace("/", "-
 # 日付順にソート
 rating_data = rating_data.sort_values("日付")
 
-# 更新日
+# 更新日（最後のデータ日付を整形して表示）
 last = rating_data["日付"].tail(1).item()
 latest_year = last.year
-last_display = last.strftime('%Y-%m-%d')  # 時間なし文字列
+last_display = last.strftime('%Y-%m-%d')
 st.write('   最終更新日：', last_display)
-
 
 st.write('使い方：自分のリーグのみの写真を用意してください。')
 st.write('写真をGoogleレンズでテキスト読み込みした文字列を下の欄に貼り付けてください。')
 st.write('上の矢印で描画開始年を変更できます。')
 st.write('羽曳野・若葉・奈良・HPC・神戸・カミ・向日市のデータのみです')
-st.write('   最終更新日：', last)
 
 # --- ペースト入力 ---
 text_input = st.text_area("参加者リストを貼り付け", height=200)
@@ -37,21 +35,39 @@ text_input = st.text_area("参加者リストを貼り付け", height=200)
 year_s = st.sidebar.number_input("開始年", 2000, 2040, 2019)
 year_l = st.sidebar.number_input("終了年", 2000, 2040, latest_year)
 
+
+# --- 氏名抽出用関数 ---
+def extract_name_dict(text: str):
+    name_dict = {}
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        nums = re.findall(r'\d+', line)
+        for num in nums:
+            kid = None
+            if len(num) >= 8:  # 8桁以上 → 下7桁を使用
+                kid = int(num[-7:])
+            elif len(num) == 7 or (len(num) == 6 and num[0] == "9"):
+                kid = int(num)
+            if kid is not None:
+                # 次の非数値行を氏名とする
+                if i + 1 < len(lines):
+                    next_line = lines[i + 1].strip()
+                    if not next_line.isdigit():
+                        name_dict[kid] = next_line
+    return name_dict
+
+
 # --- グラフ描画ボタン ---
 if st.button("グラフ描画"):
 
-    # --- 会員番号抽出（最大7人） ---
     kaiin = []
+    name_dict = {}
     if text_input:
-        lines = text_input.splitlines()
-        for line in lines:
-            nums = re.findall(r'\d+', line)  # 数字抽出
-            for num in nums:
-                if len(num) >= 7:  # 8桁などを含む
-                    num = num[-7:]  # 下7桁を使う
-                if len(num) == 7 or (len(num) == 6 and num[0] == "9"):
-                    kaiin.append(int(num))
-        kaiin = kaiin[:7]  # 最大7人
+        # 会員番号と氏名の辞書を構築
+        name_dict = extract_name_dict(text_input)
+
+        # 辞書のキー（会員番号）を最大7人まで
+        kaiin = list(name_dict.keys())[:7]
 
     if kaiin:
         # 会員ごとのデータ
@@ -64,15 +80,19 @@ if st.button("グラフ描画"):
         colorlist = ["r", "g", "b", "c", "m", "y", "k"]
 
         for j, df in enumerate(rating):
-            date = df["日付"]  # もう str.replace は不要
+            date = df["日付"]
+            label = name_dict.get(kaiin[j], str(kaiin[j]))
+            #ax.plot(date, df["レイティング"], color=colorlist[j % len(colorlist)],
+            #        marker="o", linestyle="solid", label=label)
+            # 修正前（氏名にしていた場合）
+            # ax.plot(date, df["レイティング"], color=colorlist[j % len(colorlist)],
+            #         marker="o", linestyle="solid", label=names[j])
+
+            # 修正後（凡例を会員番号に戻す）
             ax.plot(date, df["レイティング"], color=colorlist[j % len(colorlist)],
-                    marker="o", linestyle="solid", label=kaiin[j])
+                    marker="o", linestyle="solid", label=str(kaiin[j]))
 
-        # plt.style.use('seaborn-dark-palette')  # <- これを削除
-        # plt.style.use('seaborn-dark')  # matplotlib に含まれるスタイルを使用
-        plt.style.use('ggplot')  # <- これで見やすいスタイルに
-
-
+        plt.style.use('ggplot')
         plt.rcParams["font.size"] = 24
         plt.tick_params(labelsize=18)
         ax.set_title("Rating Graph", fontsize=30)
@@ -93,10 +113,10 @@ if st.button("グラフ描画"):
 
         # 年平均まとめ
         st.write('レイティング　年平均比較表')
-        matome = ["会員番号"] + list(range(year_s, year_l + 1))
+        matome = ["会員番号", "氏名"] + list(range(year_s, year_l + 1))
         temp = []
         for j, df in enumerate(rating):
-            nen_heikin = [kaiin[j]]
+            nen_heikin = [kaiin[j], name_dict.get(kaiin[j], "不明")]
             for k in range(year_s, year_l + 1):
                 try:
                     nen_heikin.append(int(df[pd.DatetimeIndex(df["日付"]).year == k]["レイティング"].mean()))
@@ -125,6 +145,7 @@ if st.button("グラフ描画"):
             if len(df) > 1:
                 temp = [
                     df["会員番号"].iloc[0],
+                    name_dict.get(kaiin[j], "不明"),
                     len(df),
                     df["レイティング"].min(),
                     df[df["レイティング"] == df["レイティング"].min()]["日付"].iloc[0],
@@ -133,37 +154,27 @@ if st.button("グラフ描画"):
                     agaru, agaruhi, sagaru, sagaruhi
                 ]
             else:
-                temp = [kaiin[j], 0, 0, '2000-01-01', 0, '2000-01-01', 0, '2000-01-01', 0, '2000-01-01']
+                temp = [kaiin[j], name_dict.get(kaiin[j], "不明"),
+                        0, 0, '2000-01-01', 0, '2000-01-01',
+                        0, '2000-01-01', 0, '2000-01-01']
             stats.append(temp)
-        #stats_matome = pd.DataFrame(stats, columns=["会員番号","出場回数","最低値","最低日","最高値","最高日","最大UP","UP日","最大DOWN","DOWN日"])
-        #st.table(stats_matome)
 
-        # 分析まとめで日付を文字列化
         stats_matome = pd.DataFrame(stats, columns=[
-        "会員番号","出場回数","最低値","最低日","最高値","最高日",
-        "最大UP","UP日","最大DOWN","DOWN日"
+            "会員番号","氏名","出場回数","最低値","最低日","最高値","最高日",
+            "最大UP","UP日","最大DOWN","DOWN日"
         ])
-
-        # 日付列のみ文字列に変換
+        # 日付列を文字列化
         for col in ["最低日","最高日","UP日","DOWN日"]:
             stats_matome[col] = pd.to_datetime(stats_matome[col]).dt.strftime('%Y-%m-%d')
 
         st.table(stats_matome)
 
-
         # 個人データの表示
-        #rating_data_disp = rating_data.set_index('場所')
-        #rating_data_disp = rating_data_disp.sort_values('日付', ascending=False)
-        #for idx, kid in enumerate(kaiin):
-        #    st.write(f'{idx+1}人目の詳細データ')
-        #    st.table(rating_data_disp[rating_data_disp["会員番号"] == kid])
-        
         rating_data_disp = rating_data.set_index('場所').copy()
         rating_data_disp["日付"] = rating_data_disp["日付"].dt.strftime('%Y-%m-%d')
         rating_data_disp = rating_data_disp.sort_values('日付', ascending=False)
 
         for idx, kid in enumerate(kaiin):
-            st.write(f'{idx+1}人目の詳細データ')
-            #st.table(rating_data_disp[rating_data_disp["会員番号"] == kid])
+            name = name_dict.get(kid, str(kid))
+            st.write(f'{name} の詳細データ')
             st.table(rating_data_disp[rating_data_disp["会員番号"] == kid].head(10))
-
