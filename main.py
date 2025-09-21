@@ -5,6 +5,7 @@ import datetime
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import re
+import unicodedata
 
 st.title("羽曳野大会レーティンググループのグラフ")
 
@@ -36,24 +37,76 @@ year_s = st.sidebar.number_input("開始年", 2000, 2040, 2019)
 year_l = st.sidebar.number_input("終了年", 2000, 2040, latest_year)
 
 
-# --- 氏名抽出用関数 ---
+# --- 氏名抽出用関数（改良版） ---
 def extract_name_dict(text: str):
+    """
+    Google Lens 等からの貼り付けテキストに対応する頑健な氏名抽出。
+    - Unicode NFKC 正規化（全角数字→半角など）
+    - 行内 "1234567 山田太郎" 形式を優先して抽出
+    - 同行に氏名が無ければ次の非数値行を氏名とする
+    """
+    if not isinstance(text, str):
+        return {}
+
+    # 正規化（全角→半角、全角スペースなどの統一）、制御文字の除去
+    text = unicodedata.normalize('NFKC', text)
+    text = re.sub(r'[\u200E\u200F\u202A-\u202E]', '', text)  # 方向付け等を除去
+    lines = [ln.strip() for ln in text.splitlines()]
+
     name_dict = {}
-    lines = text.splitlines()
     for i, line in enumerate(lines):
+        if not line:
+            continue
+
+        # 1) 行内に "数字 + 空白 + 非数字文字列" があるかをまず見る
+        m = re.search(r'(\d+)\s*([^\d].+)$', line)
+        if m:
+            num = m.group(1)
+            raw_name = m.group(2).strip()
+            try:
+                if len(num) >= 8:
+                    kid = int(num[-7:])
+                elif len(num) == 7 or (len(num) == 6 and num.startswith("9")):
+                    kid = int(num)
+                else:
+                    kid = None
+            except:
+                kid = None
+
+            if kid is not None and raw_name:
+                name_dict[kid] = raw_name
+                continue
+
+        # 2) 行内に数字があるが氏名は次行以降にあるパターン
         nums = re.findall(r'\d+', line)
         for num in nums:
-            kid = None
-            if len(num) >= 8:  # 8桁以上 → 下7桁を使用
-                kid = int(num[-7:])
-            elif len(num) == 7 or (len(num) == 6 and num[0] == "9"):
-                kid = int(num)
-            if kid is not None:
-                # 次の非数値行を氏名とする
-                if i + 1 < len(lines):
-                    next_line = lines[i + 1].strip()
-                    if not next_line.isdigit():
-                        name_dict[kid] = next_line
+            try:
+                if len(num) >= 8:
+                    kid = int(num[-7:])
+                elif len(num) == 7 or (len(num) == 6 and num.startswith("9")):
+                    kid = int(num)
+                else:
+                    kid = None
+            except:
+                kid = None
+
+            if kid is None:
+                continue
+
+            # 次の数行まで見て、最初の非数値行を氏名とする
+            name = None
+            for j in range(i+1, min(i+4, len(lines))):
+                nl = lines[j].strip()
+                if not nl:
+                    continue
+                if re.fullmatch(r'\d+', nl):
+                    continue
+                name = nl
+                break
+
+            if name:
+                name_dict[kid] = name
+
     return name_dict
 
 
@@ -69,6 +122,15 @@ if st.button("グラフ描画"):
         # 辞書のキー（会員番号）を最大7人まで
         kaiin = list(name_dict.keys())[:7]
 
+        # 抽出した氏名を rating_data に反映
+        if name_dict:
+            try:
+                rating_data["会員番号"] = rating_data["会員番号"].astype(int)
+            except Exception:
+                pass
+            for kid, nm in name_dict.items():
+                rating_data.loc[rating_data["会員番号"] == kid, "氏名"] = nm
+
     if kaiin:
         # 会員ごとのデータ
         rating = []
@@ -81,14 +143,7 @@ if st.button("グラフ描画"):
 
         for j, df in enumerate(rating):
             date = df["日付"]
-            label = name_dict.get(kaiin[j], str(kaiin[j]))
-            #ax.plot(date, df["レイティング"], color=colorlist[j % len(colorlist)],
-            #        marker="o", linestyle="solid", label=label)
-            # 修正前（氏名にしていた場合）
-            # ax.plot(date, df["レイティング"], color=colorlist[j % len(colorlist)],
-            #         marker="o", linestyle="solid", label=names[j])
-
-            # 修正後（凡例を会員番号に戻す）
+            # 凡例は会員番号で統一
             ax.plot(date, df["レイティング"], color=colorlist[j % len(colorlist)],
                     marker="o", linestyle="solid", label=str(kaiin[j]))
 
@@ -163,7 +218,6 @@ if st.button("グラフ描画"):
             "会員番号","氏名","出場回数","最低値","最低日","最高値","最高日",
             "最大UP","UP日","最大DOWN","DOWN日"
         ])
-        # 日付列を文字列化
         for col in ["最低日","最高日","UP日","DOWN日"]:
             stats_matome[col] = pd.to_datetime(stats_matome[col]).dt.strftime('%Y-%m-%d')
 
