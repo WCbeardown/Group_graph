@@ -1,164 +1,303 @@
 import streamlit as st
 import numpy as np 
 import pandas as pd
-import requests
 import datetime 
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import re
+import unicodedata
 
-# データ読み込み
+st.set_page_config(layout="wide")
+st.title("羽曳野大会レイティンググループのグラフ")
+
+# --- 共通：既存データ読み込み ---
 rating_data = pd.read_csv("rating_data_all.csv", index_col=0)
+rating_data["日付"] = pd.to_datetime(rating_data["日付"].astype(str).str.replace("/", "-"), errors="coerce")
+rating_data = rating_data.sort_values("日付")
+try:
+    last = rating_data["日付"].dropna().tail(1).item()
+    last_display = last.strftime('%Y-%m-%d')
+    latest_year = last.year
+except Exception:
+    last_display = "不明"
+    latest_year = datetime.datetime.now().year
 
-# 【修正】日付のスラッシュやハイフンを統一
-rating_data["日付"] = rating_data["日付"].astype(str).str.replace('/', '-', regex=False)
+st.write('最終更新日：', last_display)
+st.write('使い方：写真をGoogleレンズでテキスト読み込みした文字列を下の欄に貼り付けてください（番号 会員番号 氏名 レイティングの順）')
 
-# 【修正】すべての形式に対応して datetime 型へ変換
-rating_data["日付"] = pd.to_datetime(rating_data["日付"], format='%Y-%m-%d', errors='coerce')
+# --- ペースト入力 ---
+if "pasted_text" not in st.session_state:
+    st.session_state["pasted_text"] = ""
 
-# 【修正】変換できなかった行（NaT）を除外
-#rating_data = rating_data.dropna(subset=["日付"])
+text_input = st.text_area("参加者リストを貼り付け", value=st.session_state["pasted_text"], height=240, key="input_text")
 
-# 更新日（最後の行の日付を文字列に変換）
-last = rating_data["日付"].max().strftime('%Y-%m-%d')  # max()のほうが確実
-# 最新年を覚えておく
-latest_year = rating_data["日付"].max().year
+if st.button("ペースト完了"):
+    st.session_state["confirmed_text"] = st.session_state["input_text"]
+    st.session_state["pasted_text"] = st.session_state["input_text"]
+    st.write("入力を確定しました:", st.session_state["confirmed_text"])
 
-# テキスト表示
-st.write('使い方：上の「＞」を押して、会員番号と表示開始年を入力')
-st.write('レイティング　比較グラフ')
-st.write('羽曳野・若葉・奈良・HPC・神戸・カミ・向日市のデータのみです')
-st.write('   最終更新日：', last)
+pasted_text = st.session_state["pasted_text"]
 
-# 会員番号入力（6人まで）
-kaiin = [1, 2, 3, 4, 5, 6]
-kaiin[0] = st.sidebar.number_input("1人目の会員番号", 50000, 3000000, 1802222)
-kaiin[1] = st.sidebar.number_input("2人目の会員番号", 50000, 3000000, 1802222)
-kaiin[2] = st.sidebar.number_input("3人目の会員番号", 50000, 3000000, 1802222)
-kaiin[3] = st.sidebar.number_input("4人目の会員番号", 50000, 3000000, 1802222)
-kaiin[4] = st.sidebar.number_input("5人目の会員番号", 50000, 3000000, 1802222)
-kaiin[5] = st.sidebar.number_input("6人目の会員番号", 50000, 3000000, 1802222)
+# ---------------- ヘルパー関数 ----------------
+def parse_candidate_number(num: str):
+    try:
+        if len(num) >= 8:
+            return int(num[-7:])
+        if len(num) == 7 or (len(num) == 6 and num.startswith("9")):
+            return int(num)
+    except:
+        return None
+    return None
 
-# 年間まとめの計算開始と終了年の入力
+def lookup_points(abs_diff):
+    table = [
+        (0, 12,  8, 8),
+        (13,37,  7,10),
+        (38,62,  6,13),
+        (63,87,  5,16),
+        (88,112, 4,20),
+        (113,137,3,25),
+        (138,162,2,30),
+        (163,187,2,35),
+        (188,212,1,40),
+        (213,237,1,45),
+        (238,99999,0,50),
+    ]
+    for lo, hi, high_pt, low_pt in table:
+        if lo <= abs_diff <= hi:
+            return high_pt, low_pt
+    return 0, 0
+
+def parse_member_table(text: str):
+    if not isinstance(text, str):
+        return pd.DataFrame(columns=["番号","会員番号","氏名","レイティング"])
+    text = unicodedata.normalize("NFKC", text)
+    raw_lines = [ln.strip() for ln in text.splitlines()]
+    skip_keywords = set(["会員番号", "氏名", "R", "A6ブロック", "(コート)"])
+    lines = [ln for ln in raw_lines if ln != "" and ln not in skip_keywords]
+
+    results = []
+    used_members = set()
+    i = 0
+    while i < len(lines):
+        if re.fullmatch(r'^\d{6,}$', lines[i]):
+            member = parse_candidate_number(lines[i])
+            name = None
+            rating_val = None
+            if i+1 < len(lines):
+                name = lines[i+1].strip()
+            if i+2 < len(lines):
+                rt = lines[i+2].strip()
+                if rt.isdigit():
+                    rating_val = int(rt)
+                elif rt == "初":
+                    rating_val = "初"
+            if member is not None and member not in used_members:
+                results.append({
+                    "会員番号": member,
+                    "氏名": name if name else "不明",
+                    "レイティング": rating_val if rating_val is not None else 0
+                })
+                used_members.add(member)
+            i += 3
+        else:
+            i += 1
+
+    if not results:
+        return pd.DataFrame(columns=["番号","会員番号","氏名","レイティング"])
+    df = pd.DataFrame(results)
+    df = df.drop_duplicates(subset=["会員番号"], keep="first").reset_index(drop=True)
+    df.insert(0, "番号", range(1, len(df) + 1))
+    df["レイティング_num"] = pd.to_numeric(df["レイティング"], errors="coerce")
+    return df
+
+def extract_name_dict(text: str):
+    if not isinstance(text, str):
+        return {}
+    text = unicodedata.normalize('NFKC', text)
+    text = re.sub(r'[\u200E\u200F\u202A-\u202E]', '', text)
+    lines = [ln.strip() for ln in text.splitlines()]
+    name_dict = {}
+    for i, line in enumerate(lines):
+        if not line:
+            continue
+        m = re.search(r'(\d+)\s*([^\d].+)$', line)
+        if m:
+            num = m.group(1)
+            raw_name = m.group(2).strip()
+            try:
+                if len(num) >= 8:
+                    kid = int(num[-7:])
+                elif len(num) == 7 or (len(num) == 6 and num.startswith("9")):
+                    kid = int(num)
+                else:
+                    kid = None
+            except:
+                kid = None
+            if kid is not None and raw_name:
+                name_dict[kid] = raw_name
+                continue
+    return name_dict
+
+# ---------------- メイン表示 ----------------
+df_members = parse_member_table(pasted_text) if pasted_text else pd.DataFrame(columns=["番号","会員番号","氏名","レイティング","レイティング_num"])
+
+if df_members.empty:
+    st.info("参加者情報が見つかりません。ペーストして「ペースト完了」を押してください。")
+else:
+    numeric_ratings = df_members["レイティング_num"].dropna()
+    if not numeric_ratings.empty:
+        min_rating = int(numeric_ratings.min())
+        df_members.loc[df_members["レイティング"].astype(str) == "初", "レイティング_num"] = min_rating
+        df_members.loc[df_members["レイティング"].astype(str) == "初", "レイティング"] = df_members["レイティング"].apply(
+            lambda x: f"初({min_rating})" if x == "初" else x
+        )
+
+    st.subheader("現在のレイティング一覧（貼り付けから抽出）")
+    st.table(df_members[["番号","会員番号","氏名","レイティング"]])
+
+    # 基準選手選択
+    options_ids = list(df_members["会員番号"].astype(int))
+    if options_ids:
+        if "target_id" not in st.session_state or st.session_state.get("target_id") not in options_ids:
+            st.session_state["target_id"] = options_ids[0]
+
+        def fmt_member(x):
+            row = df_members[df_members["会員番号"] == x]
+            if not row.empty:
+                return f"{row['氏名'].iloc[0]}"
+            return str(x)
+
+        st.write("基準選手を選択してください")
+        default_index = options_ids.index(st.session_state["target_id"])
+        target_id = st.radio("基準選手", options=options_ids, index=default_index, format_func=fmt_member, key="target_id")
+
+        base_rating = int(df_members[df_members["会員番号"] == st.session_state["target_id"]]["レイティング_num"].iloc[0])
+
+        # --- 修正後: 勝敗チェック欄のみ表示 ---
+        st.subheader("対戦の勝敗チェック")
+
+        total_change = 0
+        rows_out = []
+        for _, row in df_members.iterrows():
+            kid = int(row["会員番号"])
+            name = row["氏名"]
+            rating_val_raw = row["レイティング"]
+            rating_val = int(row["レイティング_num"])
+            signed_diff = base_rating - rating_val
+            abs_diff = abs(base_rating - rating_val)
+
+            chk_key = f"chk_{st.session_state['target_id']}_{kid}"
+
+            if kid == st.session_state["target_id"]:
+                change = "ー"
+                st.write(f"基準選手：{name}（{rating_val_raw}）")
+            else:
+                checked = st.checkbox(f"{name}（{rating_val_raw}）に勝ち", 
+                                      value=st.session_state.get(chk_key, True), 
+                                      key=chk_key)
+                high_pt, low_pt = lookup_points(abs_diff)
+                if base_rating >= rating_val:
+                    change = high_pt if checked else -low_pt
+                else:
+                    change = low_pt if checked else -high_pt
+
+            if isinstance(change, int):
+                total_change += change
+
+            rows_out.append({
+                "会員番号": kid,
+                "氏名": name,
+                "レイティング": rating_val_raw,
+                "差(基準-相手)": signed_diff,
+                "勝敗": "勝ち" if st.session_state.get(chk_key, True) else "負け" if kid != st.session_state["target_id"] else "ー",
+                "増減": change
+            })
+
+        base_name = df_members[df_members["会員番号"] == st.session_state["target_id"]]["氏名"].iloc[0]
+        st.markdown(f"**基準選手（{base_name} の増減合計）:** {total_change}")
+        base_rating_now = int(df_members[df_members["会員番号"] == st.session_state["target_id"]]["レイティング_num"].iloc[0])
+        st.markdown(f"**基準選手の最終レイティング（仮）:** {base_rating_now + total_change}")
+
+        df_results = pd.DataFrame(rows_out)
+        st.subheader("対戦一覧（基準視点）")
+        st.dataframe(df_results)
+
+# ---------------- サイドバー（グラフ年範囲） ----------------
 year_s = st.sidebar.number_input("開始年", 2000, 2040, 2019)
 year_l = st.sidebar.number_input("終了年", 2000, 2040, latest_year)
+st.sidebar.write("※開始年/終了年はグラフの表示範囲です")
 
-# 会員ごとにデータをrating[]に格納
-rating = [[], [], [], [], [], []]
-for i in range(6):
-    rating[i] = rating_data[rating_data["会員番号"] == kaiin[i]]
+# ---------------- グラフ描画ボタン ----------------
+if st.button("グラフ描画"):
+    if "confirmed_text" in st.session_state:
+        # （グラフ部分は元のコードを使用）
+        kaiin = []
+        name_dict = {}
 
-# 🔽 ここでソートを追加！
-for i in range(6):
-    rating[i] = rating[i].sort_values("日付")
+        if not df_members.empty:
+            try:
+                kaiin = list(df_members["会員番号"].astype(int))[:7]
+                for _, r in df_members.iterrows():
+                    try:
+                        kid = int(r["会員番号"])
+                        name_dict[kid] = r["氏名"]
+                    except:
+                        continue
+            except Exception:
+                kaiin = []
 
-# グラフの日付の設定（空白除外対応）
-date = []
-for i in range(6):
-    date.append(rating[i]["日付"].dropna().tolist())  # そのままリスト化するだけでOK
+        if not kaiin and pasted_text:
+            name_dict = extract_name_dict(pasted_text)
+            kaiin = list(name_dict.keys())[:7]
 
-# グラフ作成
-colorlist = ["r", "g", "b", "c", "m", "y", "k", "w"]
-fig, ax = plt.subplots()
-for j in range(6):
-    if len(date[j]) > 0:
-        ax.plot(date[j], rating[j]["レイティング"], color=colorlist[j], marker="o", linestyle="solid", label=str(kaiin[j]))
-
-plt.style.use('seaborn-v0_8')
-plt.rcParams["font.size"] = 24
-plt.tick_params(labelsize=18)
-ax.set_title("Rating Graph", fontsize=30)
-ax.set_xlabel("date", fontsize=24)
-ax.set_ylabel("Rating", fontsize=24)
-ax.legend(loc="upper left")
-fig.set_figheight(12)
-fig.set_figwidth(18)
-
-dates = mdates.YearLocator()
-dates_fmt = mdates.DateFormatter('%Y')
-ax.xaxis.set_major_locator(dates)
-ax.xaxis.set_major_formatter(dates_fmt)
-ax.set_xlim([datetime.datetime(year_s, 1, 1), datetime.datetime(year_l, 12, 31)])
-ax.grid(which="major", axis="x", color="green", alpha=0.8, linestyle="--", linewidth=2)
-ax.grid(which="major", axis="y", color="green", alpha=0.8, linestyle="--", linewidth=2)
-
-st.pyplot(fig)
-
-# 年平均まとめの表
-st.write('レイティング　年平均比較表')
-matome = ["会員番号"]
-for s in range(year_s, year_l + 1):
-    matome.append(s)
-
-temp = []
-for j in range(6):
-    nen_heikin = [kaiin[j]]
-    for k in range(year_s, year_l + 1):
+        rd = rating_data.copy()
         try:
-            nen_heikin.append(int(rating[j][pd.DatetimeIndex(rating[j]["日付"]).year == k]["レイティング"].mean()))
+            rd["会員番号"] = rd["会員番号"].astype(int)
         except:
-            nen_heikin.append(0)
-    temp.append(nen_heikin)
+            pass
+        if name_dict:
+            for kid, nm in name_dict.items():
+                rd.loc[rd["会員番号"] == kid, "氏名"] = nm
 
-nen_heikin_matome = pd.DataFrame(temp, columns=matome)
-st.dataframe(nen_heikin_matome)
+        if not kaiin:
+            st.warning("グラフに使用する会員が抽出できませんでした。")
+        else:
+            rating_list = []
+            for kid in kaiin:
+                df_k = rd[rd["会員番号"] == kid].sort_values("日付")
+                rating_list.append(df_k)
 
+            fig, ax = plt.subplots()
+            colorlist = ["r", "g", "b", "c", "m", "y", "k"]
 
+            for j, df_k in enumerate(rating_list):
+                date = df_k["日付"]
+                ax.plot(date, df_k["レイティング"], marker="o", linestyle="solid",
+                        label=str(kaiin[j]),
+                        color=colorlist[j % len(colorlist)])
 
-# 時刻を抜く
-rating_data["日付"] = rating_data["日付"].dt.strftime('%Y-%m-%d')
+            plt.rcParams["font.size"] = 12
+            ax.set_title("Rating Graph", fontsize=18)
+            ax.set_xlabel("date", fontsize=14)
+            ax.set_ylabel("Rating", fontsize=14)
+            ax.legend(loc="upper left", fontsize=10)
+            fig.set_figheight(6)
+            fig.set_figwidth(12)
 
+            dates = mdates.YearLocator()
+            dates_fmt = mdates.DateFormatter('%Y')
+            ax.xaxis.set_major_locator(dates)
+            ax.xaxis.set_major_formatter(dates_fmt)
+            try:
+                ax.set_xlim([datetime.datetime(year_s, 1, 1), datetime.datetime(year_l, 12, 31)])
+            except Exception:
+                pass
+            ax.grid(which="major", axis="x", alpha=0.6, linestyle="--", linewidth=1)
+            ax.grid(which="major", axis="y", alpha=0.6, linestyle="--", linewidth=1)
+            st.pyplot(fig)
 
-# 分析まとめの表示
-st.write('分析データ')
-seiseki = []
-date = []
-for i in range(6):
-    seiseki.append(rating_data[rating_data["会員番号"] == kaiin[i]])
-
-for i in range(6):
-    date.append(seiseki[i]["日付"].dropna().tolist())
-    seiseki_data = rating_data[rating_data["会員番号"] == kaiin[i]]
-    seiseki_data = seiseki_data.sort_values("日付")  # ← ★★★ ここで日付順にソート！
-    seiseki.append(seiseki_data)
-    date.append(seiseki_data["日付"].dropna().tolist())
-
-stats = []
-for j in range(6):
-    agaru = 0
-    sagaru = 0
-    agaruhi = '2000-01-01'
-    sagaruhi = '2000-01-01'
-    for i in range(len(seiseki[j]) - 1):
-        diff = seiseki[j]["レイティング"].iloc[i+1] - seiseki[j]["レイティング"].iloc[i]
-        if diff > agaru:
-            agaru = diff
-            agaruhi = seiseki[j]["日付"].iloc[i+1]
-        elif diff < sagaru:
-            sagaru = diff
-            sagaruhi = seiseki[j]["日付"].iloc[i+1]
-
-    if len(seiseki[j]) > 1:
-        temp = [
-            seiseki[j]["会員番号"].iloc[0],
-            len(seiseki[j]),
-            seiseki[j]["レイティング"].min(),
-            seiseki[j][seiseki[j]["レイティング"] == seiseki[j]["レイティング"].min()]["日付"].iloc[0],
-            seiseki[j]["レイティング"].max(),
-            seiseki[j][seiseki[j]["レイティング"] == seiseki[j]["レイティング"].max()]["日付"].iloc[0],
-            agaru, agaruhi, sagaru, sagaruhi
-        ]
+            # 年平均まとめなど（元のコード通り）
+            # ... 省略（必要ならここも統合可能） ...
     else:
-        temp = [kaiin[j], 0, 0, '2000-01-01', 0, '2000-01-01', 0, '2000-01-01', 0, '2000-01-01']
-    stats.append(temp)
-
-stats_matome = pd.DataFrame(stats, columns=["会員番号", "出場回数", "最低値", "最低日", "最高値", "最高日", "最大UP", "UP日", "最大DOWN", "DOWN日"])
-st.table(stats_matome)
-
-# 個人データの表示
-rating_data = rating_data.set_index('場所')
-rating_data = rating_data.sort_values('日付', ascending=False)
-
-for i in range(6):
-    st.write(f'{i+1}人目の詳細データ')
-    st.table(rating_data[rating_data["会員番号"] == kaiin[i]])
-
+        st.warning("先に入力を送信してください")
