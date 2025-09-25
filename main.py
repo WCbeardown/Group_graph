@@ -23,7 +23,27 @@ except Exception:
     latest_year = datetime.datetime.now().year
 
 st.write('最終更新日：', last_display)
-st.write('使い方：自分のリーグだけの組み合わせ写真を用意してください。Googleレンズでテキスト読み込みした文字列を下の欄に貼り付けてください。')
+#st.write('使い方：自分のリーグだけの組み合わせ写真を用意してください。Googleレンズでテキスト読み込みした文字列を下の欄に貼り付けてください。')
+
+# ---------- 説明（左: 文、右: 図） ----------
+st.header("使い方")
+steps = [
+    ("用意する写真", "自分のリーグだけの組み合わせ写真を用意してください。Googleレンズでテキスト読み込みした文字列を下の欄に貼り付けてください。", "image1.jpg"),
+]
+for title, desc, img in steps:
+    col_l, col_r = st.columns([2, 1])
+    with col_l:
+        st.subheader(title)
+        st.write(desc)
+    with col_r:
+        try:
+            st.image(img, use_container_width=True)
+        except Exception:
+            st.write("(画像ファイルが見つかりません)")
+
+
+
+
 
 # --- ペースト入力 ---
 if "pasted_text" not in st.session_state:
@@ -34,7 +54,10 @@ text_input = st.text_area("参加者リストを貼り付け", value=st.session_
 if st.button("ペースト完了"):
     st.session_state["confirmed_text"] = st.session_state["input_text"]
     st.session_state["pasted_text"] = st.session_state["input_text"]
-    st.write("入力を確定しました:", st.session_state["confirmed_text"])
+#    st.write("入力を確定しました:", st.session_state["confirmed_text"])
+    st.write("入力を確定しました:", "")
+
+pasted_text = st.session_state.get("pasted_text", "")
 
 #pasted_text = st.session_state["pasted_text"]
 
@@ -368,6 +391,15 @@ if st.button("グラフ描画"):
                 "最大UP","UP日","最大DOWN","DOWN日"
             ])
 
+            # 個人データの表示（最新順）
+            rating_data_disp = rd.copy()
+            rating_data_disp["日付"] = rating_data_disp["日付"].dt.strftime('%Y-%m-%d')
+            rating_data_disp = rating_data_disp.sort_values('日付', ascending=False)
+            for idx, kid in enumerate(kaiin):
+                name = name_dict.get(kid, str(kid))
+                st.write(f'{name} の詳細データ(直近１０大会)')
+                st.table(rating_data_disp[rating_data_disp["会員番号"] == kid].head(10))
+            
             # 個人データの表示（最新順）
             rating_data_disp = rd.copy()
             rating_data_disp["日付"] = rating_data_disp["日付"].dt.strftime('%Y-%m-%d')
