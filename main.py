@@ -8,7 +8,7 @@ import re
 import unicodedata
 
 st.set_page_config(layout="wide")
-st.title("羽曳野大会レイティンググループのグラフ")
+st.title("羽曳野大会レイティンググループの勝敗計算とグラフ")
 
 # --- 共通：既存データ読み込み ---
 rating_data = pd.read_csv("rating_data_all.csv", index_col=0)
@@ -23,7 +23,7 @@ except Exception:
     latest_year = datetime.datetime.now().year
 
 st.write('最終更新日：', last_display)
-st.write('使い方：写真をGoogleレンズでテキスト読み込みした文字列を下の欄に貼り付けてください（番号 会員番号 氏名 レイティングの順）')
+st.write('使い方：自分のリーグだけの組み合わせ写真を用意してください。Googleレンズでテキスト読み込みした文字列を下の欄に貼り付けてください。')
 
 # --- ペースト入力 ---
 if "pasted_text" not in st.session_state:
@@ -36,7 +36,7 @@ if st.button("ペースト完了"):
     st.session_state["pasted_text"] = st.session_state["input_text"]
     st.write("入力を確定しました:", st.session_state["confirmed_text"])
 
-pasted_text = st.session_state["pasted_text"]
+#pasted_text = st.session_state["pasted_text"]
 
 # ---------------- ヘルパー関数 ----------------
 def parse_candidate_number(num: str):
@@ -175,7 +175,7 @@ else:
         base_rating = int(df_members[df_members["会員番号"] == st.session_state["target_id"]]["レイティング_num"].iloc[0])
 
         # --- 修正後: 勝敗チェック欄のみ表示 ---
-        st.subheader("対戦の勝敗チェック")
+        st.subheader("対戦の勝敗チェック(勝ったらチェック、負けたら外す)")
 
         total_change = 0
         rows_out = []
@@ -299,5 +299,83 @@ if st.button("グラフ描画"):
 
             # 年平均まとめなど（元のコード通り）
             # ... 省略（必要ならここも統合可能） ...
+
+            # 年平均まとめ
+            st.write('レイティング　年平均比較表')
+            matome = ["会員番号", "氏名"] + list(range(year_s, year_l + 1))
+            temp = []
+            for j, df_k in enumerate(rating_list):
+                nen_heikin = [kaiin[j], name_dict.get(kaiin[j], rd.loc[rd["会員番号"] == kaiin[j], "氏名"].iat[0] if not name_dict.get(kaiin[j]) and not rd.loc[rd["会員番号"] == kaiin[j], "氏名"].empty else name_dict.get(kaiin[j], "不明"))]
+                for k in range(year_s, year_l + 1):
+                    try:
+                        nen_heikin.append(int(df_k[pd.DatetimeIndex(df_k["日付"]).year == k]["レイティング"].mean()))
+                    except:
+                        nen_heikin.append(0)
+                temp.append(nen_heikin)
+            nen_heikin_matome = pd.DataFrame(temp, columns=matome)
+            st.dataframe(nen_heikin_matome)
+
+            # 分析まとめ
+            st.write('分析データ')
+            stats = []
+            for j, df_k in enumerate(rating_list):
+                agaru = 0
+                sagaru = 0
+                agaruhi = pd.NaT
+                sagaruhi = pd.NaT
+                for i in range(len(df_k) - 1):
+                    try:
+                        diff = int(df_k["レイティング"].iloc[i+1]) - int(df_k["レイティング"].iloc[i])
+                    except Exception:
+                        continue
+                    if diff > agaru:
+                        agaru = diff
+                        agaruhi = df_k["日付"].iloc[i+1]
+                    if diff < sagaru:
+                        sagaru = diff
+                        sagaruhi = df_k["日付"].iloc[i+1]
+                if len(df_k) > 0:
+                    try:
+                        min_val = int(df_k["レイティング"].min())
+                        min_date = df_k[df_k["レイティング"] == df_k["レイティング"].min()]["日付"].iloc[0]
+                    except:
+                        min_val = 0
+                        min_date = pd.NaT
+                    try:
+                        max_val = int(df_k["レイティング"].max())
+                        max_date = df_k[df_k["レイティング"] == df_k["レイティング"].max()]["日付"].iloc[0]
+                    except:
+                        max_val = 0
+                        max_date = pd.NaT
+                    temp = [
+                        kaiin[j],
+                        name_dict.get(kaiin[j], rd.loc[rd["会員番号"] == kaiin[j], "氏名"].iat[0] if not name_dict.get(kaiin[j]) and not rd.loc[rd["会員番号"] == kaiin[j], "氏名"].empty else "不明"),
+                        len(df_k),
+                        min_val,
+                        min_date,
+                        max_val,
+                        max_date,
+                        agaru, agaruhi, sagaru, sagaruhi
+                    ]
+                else:
+                    temp = [kaiin[j], name_dict.get(kaiin[j], "不明"),
+                            0, 0, pd.NaT, 0, pd.NaT,
+                            0, pd.NaT, 0, pd.NaT]
+                stats.append(temp)
+
+            stats_matome = pd.DataFrame(stats, columns=[
+                "会員番号","氏名","出場回数","最低値","最低日","最高値","最高日",
+                "最大UP","UP日","最大DOWN","DOWN日"
+            ])
+
+            # 個人データの表示（最新順）
+            rating_data_disp = rd.copy()
+            rating_data_disp["日付"] = rating_data_disp["日付"].dt.strftime('%Y-%m-%d')
+            rating_data_disp = rating_data_disp.sort_values('日付', ascending=False)
+            for idx, kid in enumerate(kaiin):
+                name = name_dict.get(kid, str(kid))
+                st.write(f'{name} の詳細データ(直近１０大会)')
+                st.table(rating_data_disp[rating_data_disp["会員番号"] == kid].head(10))
+            
     else:
         st.warning("先に入力を送信してください")
